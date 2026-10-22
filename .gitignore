@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.void/
+.wrangler/
+.agents/
+.env
+.env.*
+*.tsbuildinfo
+.DS_Store
+*.log

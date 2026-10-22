@@ -1,0 +1,5 @@
+Third-party CC0 assets bundled in this folder:
+- Crescent horn kaiju creature: https://www.innerscene.com/tools/library/3d-parts/crescent-horn-kaiju-creature-a7496c52
+  CC0 public domain; original Innerscene model.
+- Harper animated character: https://www.innerscene.com/tools/library/3d-parts/locomotion-collection-harper-3d-person-animated-797e1e2a
+  CC0 public domain; adapted from MakeHuman/MPFB CC0 assets.

@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1792426054268,
+      "tag": "20261019160734_aberrant_medusa",
+      "breakpoints": true
+    }
+  ]
+}

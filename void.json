@@ -1,0 +1,15 @@
+{
+    "$schema":  "./node_modules/void/schema.json",
+    "worker":  {
+                   "compatibility_date":  "2026-10-19"
+               },
+    "inference":  {
+                      "bindings":  {
+                                       "db":  true
+                                   },
+                      "appType":  "void"
+                  },
+    "routing":  {
+                    "notFound":  "none"
+                }
+}
