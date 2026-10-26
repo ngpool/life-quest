@@ -184,12 +184,38 @@ export async function handlePost(c: any) {
     return c.json({ quest: { ...quest, players: playersForQuest(state, quest) } }, 201);
   }
 
-  const match = path.match(/^\/api\/party-quests\/([\w-]+)\/(complete|travel|attack|retry)$/);
+  const match = path.match(/^\/api\/party-quests\/([\w-]+)\/(complete|travel|attack|enemy-attack|retry)$/);
   if (!match) return error(c, 404, 'not found');
   const [, questId, actionPath] = match, id = String(body.id || ''), quest = state.partyQuests[questId];
   if (!authorized(state, id, String(body.secret || ''))) return error(c, 401, 'unauthorized');
   if (!quest || !quest.members.includes(id)) return error(c, 404, '参加中のクエストがありません');
 
+  if (actionPath === 'enemy-attack') {
+    if (quest.status !== 'active') return c.json({ quest: { ...quest, players: playersForQuest(state, quest) }, ignored: true });
+    quest.partyHp ??= Object.fromEntries(quest.members.map((member: string) => [member, 100]));
+    for (const member of quest.members) quest.partyHp[member] ??= 100;
+    const targetIds = [...new Set((Array.isArray(body.targets) ? body.targets : []).map(String))]
+      .filter((targetId: string) => quest.members.includes(targetId) && quest.partyHp[targetId] > 0);
+    if (!targetIds.length) return c.json({ quest: { ...quest, players: playersForQuest(state, quest) }, ignored: true });
+    const now = Date.now();
+    const lastHitAt = Date.parse(quest.lastEnemyAttack?.at || '');
+    if (Number.isFinite(lastHitAt) && now - lastHitAt < 2600) {
+      return c.json({ quest: { ...quest, players: playersForQuest(state, quest) }, ignored: true });
+    }
+    const ranges: Record<string, [number, number]> = { slime: [7, 12], goblin: [10, 16], golem: [14, 21], greatbeast: [17, 24] };
+    const [low, high] = ranges[quest.monsterType] || ranges.slime;
+    quest.guarding ??= {};
+    const hits = targetIds.map((targetId: string) => {
+      let damage = low + Math.floor(Math.random() * (high - low + 1));
+      if (quest.guarding[targetId]) { damage = Math.ceil(damage * .4); delete quest.guarding[targetId]; }
+      quest.partyHp[targetId] = Math.max(0, quest.partyHp[targetId] - damage);
+      return { playerId: targetId, playerName: state.players[targetId]?.name || 'Hunter', damage };
+    });
+    quest.lastEnemyAttack = { ...hits[0], hits, at: new Date(now).toISOString() };
+    if (quest.members.every((member: string) => quest.partyHp[member] === 0)) quest.status = 'defeated';
+    await saveState(state);
+    return c.json({ quest: { ...quest, players: playersForQuest(state, quest) }, ignored: false });
+  }
   if (actionPath === 'complete') {
     if (quest.status === 'active' && !quest.completedBy.includes(id)) quest.completedBy.push(id);
     if (quest.completedBy.length === quest.members.length) quest.status = 'complete';
@@ -216,7 +242,10 @@ export async function handlePost(c: any) {
     quest.partyHp ??= Object.fromEntries(quest.members.map((member: string) => [member, 100]));
     quest.partyMp ??= Object.fromEntries(quest.members.map((member: string) => [member, 20]));
     quest.potions ??= Object.fromEntries(quest.members.map((member: string) => [member, 1]));
+    quest.guarding ??= {};
     for (const member of quest.members) { quest.partyHp[member] ??= 100; quest.partyMp[member] ??= 20; quest.potions[member] ??= 1; }
+    if (quest.partyHp[id] <= 0 && action !== 'item') return error(c, 409, 'You are down. Use a potion to revive.');
+    if (action === 'guard') quest.guarding[id] = true;
     let damage = 0, command = 'こうげき';
     if (action === 'spell') {
       if (quest.partyMp[id] < 8) return error(c, 400, 'MPが足りない！');
@@ -225,29 +254,25 @@ export async function handlePost(c: any) {
       damage = 18 + Math.floor(Math.random() * 12) + Math.min(12, Math.floor((player.level || 1) / 2)); command = 'こうげき';
     } else if (action === 'item') {
       if (quest.potions[id] < 1) return error(c, 400, 'やくそうがありません');
-      quest.potions[id]--; quest.partyHp[id] = Math.min(quest.partyMaxHp || 100, quest.partyHp[id] + 45); command = 'やくそう';
+      quest.potions[id]--; quest.partyHp[id] = quest.partyHp[id] <= 0 ? Math.min(35, quest.partyMaxHp || 100) : Math.min(quest.partyMaxHp || 100, quest.partyHp[id] + 45); command = 'やくそう';
     } else command = 'ぼうぎょ';
     quest.hp = Math.max(0, (Number(quest.hp) || 90) - damage);
     quest.lastAction = { playerName: player.name, command, damage, at: new Date().toISOString() };
     if (quest.hp === 0) quest.status = 'complete';
-    else {
-      const ranges: Record<string, [number, number]> = { slime: [8, 14], goblin: [12, 19], golem: [17, 25], greatbeast: [20, 30] };
-      const [low, high] = ranges[quest.monsterType] || ranges.slime;
-      let hit = low + Math.floor(Math.random() * (high - low + 1));
-      if (action === 'guard') hit = Math.ceil(hit * .4);
-      quest.partyHp[id] = Math.max(0, quest.partyHp[id] - hit);
-      quest.lastEnemyAttack = { playerId: id, playerName: player.name, damage: hit, at: new Date().toISOString() };
-      if (quest.members.every((member: string) => quest.partyHp[member] === 0)) quest.status = 'defeated';
-    }
     await saveState(state);
     return c.json({ quest: { ...quest, players: playersForQuest(state, quest) } });
   }
-  if (quest.status !== 'defeated') return error(c, 409, '再挑戦できません');
-  quest.status = 'active'; quest.hp = quest.maxHp;
-  quest.partyHp = Object.fromEntries(quest.members.map((member: string) => [member, 70]));
-  quest.partyMp = Object.fromEntries(quest.members.map((member: string) => [member, 20]));
-  quest.potions = Object.fromEntries(quest.members.map((member: string) => [member, 1]));
-  delete quest.lastAction; delete quest.lastEnemyAttack;
+  quest.partyHp ??= Object.fromEntries(quest.members.map((member: string) => [member, 100]));
+  if (quest.status === 'defeated') {
+    quest.status = 'active'; quest.hp = quest.maxHp;
+    quest.partyHp = Object.fromEntries(quest.members.map((member: string) => [member, 70]));
+    quest.partyMp = Object.fromEntries(quest.members.map((member: string) => [member, 20]));
+    quest.potions = Object.fromEntries(quest.members.map((member: string) => [member, 1]));
+  } else if (quest.status === 'active' && quest.partyHp[id] <= 0) {
+    quest.partyHp[id] = 70;
+    quest.partyMp ??= {}; quest.partyMp[id] = 20;
+    quest.potions ??= {}; quest.potions[id] = 1;
+  } else return error(c, 409, 'Retry is available after you are defeated.');  delete quest.lastAction; delete quest.lastEnemyAttack;
   await saveState(state);
   return c.json({ quest: { ...quest, players: playersForQuest(state, quest) } });
 }

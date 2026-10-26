@@ -24,6 +24,8 @@ const profile = saved || { id: crypto.randomUUID().replaceAll('-', ''), secret: 
 localStorage.setItem(storageKey, JSON.stringify(profile));
 let friends = [];
 let partyQuests = [];
+let activeQuest = null;
+let combatActionBusy = false;
 
 async function api(path, method = 'GET', data) {
   try { return await voidFetch(path, { method, body: data }); }
@@ -91,7 +93,75 @@ function renderPartyQuests() {
     action.addEventListener('click', () => enterHunt(quest)); row.append(name, action); list.append(row);
   }
 }
+function renderCombatState(quest) {
+  if (!quest) return;
+  $('#battle-hp-text').textContent = `${Math.max(0, Number(quest.hp) || 0)} / ${Number(quest.maxHp) || 0}`;
+  const monsterFill = $('#battle-hp-fill');
+  if (monsterFill) {
+    monsterFill.style.width = `${Math.max(0, Math.min(100, (Number(quest.hp) || 0) / Math.max(1, Number(quest.maxHp) || 1) * 100))}%`;
+    monsterFill.classList.toggle('low', Number(quest.hp) / Math.max(1, Number(quest.maxHp) || 1) < .25);
+  }
+  const stats = $('#party-stat-bars');
+  const localHp = Math.max(0, Number(quest.partyHp?.[profile.id] ?? quest.partyMaxHp ?? 100));
+  if (stats) {
+    stats.replaceChildren();
+    for (const player of quest.players || []) {
+      const maxHp = Number(quest.partyMaxHp) || 100;
+      const hp = Math.max(0, Number(quest.partyHp?.[player.id] ?? maxHp));
+      const card = document.createElement('div'); card.className = 'party-vital';
+      if (hp === 0) card.classList.add('is-down');
+      const name = document.createElement('b'); name.textContent = player.name || 'Hunter';
+      const value = document.createElement('span'); value.textContent = `HP ${hp} / ${maxHp}`;
+      const track = document.createElement('i'); const fill = document.createElement('em');
+      fill.style.width = `${Math.max(0, Math.min(100, hp / maxHp * 100))}%`; track.append(fill);
+      card.append(name, value, track); stats.append(card);
+    }
+  }
+  const retry = $('#retry-battle');
+  if (retry) retry.hidden = quest.status !== 'defeated';
+  const gameOver = localHp <= 0 || quest.status === 'defeated';
+  const gameOverScreen = $('#game-over-screen');
+  if (gameOverScreen) gameOverScreen.hidden = !gameOver;
+  window.battle3D?.setGameOver(gameOver);
+  window.battle3D?.setPartyVitals(quest.partyHp || {});
+  document.querySelectorAll('.battle-commands [data-command]').forEach((button) => {
+    const command = button.dataset.command;
+    button.disabled = command === 'retry' ? quest.status !== 'defeated'
+      : quest.status !== 'active' || localHp <= 0;
+  });
+  const status = $('#battle-status'), log = $('#battle-log');
+  if (quest.status === 'defeated') status.textContent = 'Party defeated · Retry to recover';
+  else if (quest.status === 'complete' || quest.status === 'completed') status.textContent = 'Hunt complete';
+  else if (localHp <= 0) status.textContent = 'GAME OVER';
+  else if (quest.lastEnemyAttack) {
+    const hitPlayer = quest.players?.find((player) => player.id === quest.lastEnemyAttack.playerId);
+    status.textContent = `Monster hit ${hitPlayer?.name || 'a hunter'} for ${quest.lastEnemyAttack.damage}`;
+  }
+  if (log && quest.lastAction) log.textContent = `${quest.lastAction.playerName || 'Hunter'} · ${quest.lastAction.command || 'action'} · ${quest.lastAction.damage || 0} damage`;
+}
+async function performCombatAction(action, combatPayload = {}) {
+  if (!activeQuest || combatActionBusy) return;
+  combatActionBusy = true;
+  try {
+    const endpoint = action === 'retry' ? 'retry' : action === 'enemy-attack' ? 'enemy-attack' : 'attack';
+    const result = await api(`/api/party-quests/${encodeURIComponent(activeQuest.id)}/${endpoint}`, 'POST', {
+      id: profile.id, secret: profile.secret, action, ...combatPayload,
+    });
+    if (result.ignored) return;
+    activeQuest = result.quest;
+    renderCombatState(activeQuest);
+    if (action === 'retry') window.battle3D?.setMonster(activeQuest.monsterType, false);
+    const index = partyQuests.findIndex((quest) => quest.id === activeQuest.id);
+    if (index >= 0) partyQuests[index] = activeQuest;
+    if (activeQuest.status === 'defeated' || activeQuest.status === 'complete') {
+      window.battle3D?.setMonster(activeQuest.monsterType, true);
+    }
+  } catch (error) {
+    const status = $('#battle-status'); if (status) status.textContent = error.message;
+  } finally { combatActionBusy = false; }
+}
 function enterHunt(quest) {
+  activeQuest = quest;
   const panel = $('#battle-panel');
   panel.hidden = false;
   panel.classList.add('is-fullscreen');
@@ -99,12 +169,19 @@ function enterHunt(quest) {
   $('#battle-canvas')?.focus({ preventScroll: true });
   $('#battle-title').textContent = `${quest.monsterName || quest.name}を討伐しよう`;
   $('#battle-monster-name').textContent = quest.monsterName || 'モンスター';
-  $('#battle-hp-text').textContent = `${quest.hp} / ${quest.maxHp}`;
-  $('#battle-hp-fill').style.width = `${Math.max(0, quest.hp / quest.maxHp * 100)}%`;
+  renderCombatState(quest);
   $('#battle-party-label').textContent = (quest.players || []).map((player) => player.name).join(' ＋ ');
-  window.battle3D?.setMonster(quest.monsterType, quest.status === 'completed');
+  window.battle3D?.setMonster(quest.monsterType, quest.status === 'completed' || quest.status === 'complete' || quest.status === 'defeated');
   window.battle3D?.setParty(quest.players || [], profile.id);
 }
+document.querySelectorAll('.battle-commands [data-command]').forEach((button) => {
+  button.addEventListener('click', () => performCombatAction(button.dataset.command));
+});
+window.addEventListener('lifequest:enemy-strike', (event) => {
+  if (activeQuest && Number(activeQuest.partyHp?.[profile.id] ?? activeQuest.partyMaxHp ?? 100) > 0) {
+    performCombatAction('enemy-attack', { targets: event.detail?.targets || [] });
+  }
+});
 
 async function refreshSocial() {
   const badge = $('#network-status');
@@ -173,6 +250,8 @@ function leaveHunt() {
   document.body.classList.remove('in-hunt');
 }
 $('#battle-exit')?.addEventListener('click', leaveHunt);
+$('#game-over-retry')?.addEventListener('click', () => performCombatAction('retry'));
+$('#game-over-exit')?.addEventListener('click', leaveHunt);
 $('#adventure-exit')?.addEventListener('click', () => { history.replaceState(null, '', '#quests'); setActiveNav('#quests'); });
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;

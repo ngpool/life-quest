@@ -3,3 +3,4 @@ Third-party CC0 assets bundled in this folder:
   CC0 public domain; original Innerscene model.
 - Harper animated character: https://www.innerscene.com/tools/library/3d-parts/locomotion-collection-harper-3d-person-animated-797e1e2a
   CC0 public domain; adapted from MakeHuman/MPFB CC0 assets.
+- Forest Ground 01 PBR texture maps (diffuse, normal, roughness): Rob Tuytel / Poly Haven, CC0; https://polyhaven.com/a/forrest_ground_01
